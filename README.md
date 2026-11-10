@@ -1,4 +1,4 @@
-# -The-Chosen-One-
+#"The Chosen One"
 
 # StickBuddy_Paint.ps1 - a harmless desktop "virus" prank for Windows
 # "The Chosen One" (Alan Becker style) draws himself on your screen, waves, then just wanders around the bottom
@@ -6,6 +6,10 @@
 # ATTACK him (grab him, drag him, THROW him) and he lights his hands on fire and FLIES to your mouse pointer - head first,
 # flames streaming out behind him - then hovers in front of you and zaps you with his EYE LASERS. Just for fun the lasers
 # also slice your front window in half (only an illusion: nothing really breaks, it all comes back a moment later).
+# Now and then ($RetroChance) the lasers do something else instead: he zaps your desktop back to 2001. For 2 minutes you get
+# a Windows XP look-alike - a Bliss-style hill wallpaper, a blue taskbar with a green Start button, an open Start menu - and
+# then he changes it all back. It is a costume drawn on top of your real desktop (plus a temporary wallpaper swap that is
+# never saved, so a restart always brings your own wallpaper back). Nothing is installed or changed for good.
 # After that he rides your pointer. While he rides it, Shift+drag grabs him off. Press ESC (or close this window) and he leaves.
 #
 # MS PAINT - open Paint and he flies into the canvas and treats it as his stage:
@@ -357,6 +361,77 @@ try {
     Write-Host 'StickBuddy: solid drawings and window slicing are not available on this PC (everything else still works).' -ForegroundColor DarkGray
 }
 
+# ---------- the 2001 zap: swapping the wallpaper, and listing your open windows for the fake taskbar ----------
+# Also optional (and kept in its own block on purpose): if this part can't be built, he just can't do the 2001 zap.
+$retroCode = @'
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+using System.Text;
+
+public static class RetroBits {
+    delegate bool EnumProc(IntPtr h, IntPtr l);
+    [DllImport("user32.dll")] static extern bool EnumWindows(EnumProc f, IntPtr l);
+    [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
+    [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr h, uint cmd);
+    [DllImport("user32.dll")] static extern int GetWindowLong(IntPtr h, int i);
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
+    [DllImport("dwmapi.dll")] static extern int DwmGetWindowAttribute(IntPtr h, int attr, out int val, int size);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "SystemParametersInfo")] static extern bool GetParam(uint action, uint param, StringBuilder buf, uint ini);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, EntryPoint = "SystemParametersInfo")] static extern bool SetParam(uint action, uint param, string buf, uint ini);
+
+    // the wallpaper that is showing right now (null if Windows won't say)
+    public static string GetWallpaper() {
+        try {
+            StringBuilder sb = new StringBuilder(520);
+            if (GetParam(0x73, 520, sb, 0)) return sb.ToString();
+        } catch (Exception) { }
+        return null;
+    }
+    // changes the wallpaper for this session only (it is NOT written to your settings, so a restart always brings yours back)
+    public static bool SetWallpaper(string path) {
+        try { return SetParam(0x14, 0, path, 2); } catch (Exception) { return false; }
+    }
+    static string TitleOf(IntPtr h) {
+        StringBuilder sb = new StringBuilder(256);
+        GetWindowText(h, sb, 256);
+        return sb.ToString();
+    }
+    public static string ForeTitle() {
+        try { return TitleOf(GetForegroundWindow()); } catch (Exception) { return ""; }
+    }
+    // the titles of the windows that would have a button on a taskbar (front to back)
+    public static string[] Titles(int max) {
+        List<string> res = new List<string>();
+        try {
+            EnumWindows(delegate(IntPtr h, IntPtr l) {
+                if (res.Count >= max) return false;
+                if (!IsWindowVisible(h)) return true;
+                if (GetWindow(h, 4) != IntPtr.Zero) return true;
+                int ex = GetWindowLong(h, -20);
+                if ((ex & 0x80) != 0 && (ex & 0x40000) == 0) return true;
+                int cloaked = 0;
+                try { DwmGetWindowAttribute(h, 14, out cloaked, 4); } catch (Exception) { }
+                if (cloaked != 0) return true;
+                string t = TitleOf(h);
+                if (t.Length == 0 || t == "Program Manager") return true;
+                res.Add(t);
+                return true;
+            }, IntPtr.Zero);
+        } catch (Exception) { }
+        return res.ToArray();
+    }
+}
+'@
+$retroOk = $false
+try {
+    if (-not ('RetroBits' -as [type])) { Add-Type -TypeDefinition $retroCode -ErrorAction Stop }
+    $retroOk = $true
+} catch {
+    Write-Host 'StickBuddy: the 2001 zap is not available on this PC (everything else still works).' -ForegroundColor DarkGray
+}
+
 # ---------- settings you can change ----------
 $MouseNudge = $true       # a paint-ball hit shoves your pointer a little (only while Paint is in front and no mouse button is down)
 $WalkSpeed = 150          # how fast he strolls, in pixels per second
@@ -364,6 +439,10 @@ $SolidDrawings = $true    # the lines you draw in Paint are solid: he can't walk
 $Lasers = $true           # eye lasers when he is angry (they also burn holes in your lines)
 $WindowBreak = $true      # the lasers slice your front window in half "just for fun" (only an illusion, nothing really breaks)
 $BreakChance = 1.0        # 0 to 1: how often an angry flight ends with a sliced window (1 = every time)
+$RetroMode = $true        # he can zap your desktop back to 2001: a Windows XP look-alike drawn on top of your real one
+$RetroChance = 0.35       # 0 to 1: how often an angry flight ends with the 2001 zap instead of the sliced window (1 = every time)
+$RetroSeconds = 120       # how long the old look stays before he changes it back (120 = 2 minutes)
+$RetroWallpaper = $true   # also swap your real wallpaper for a Bliss-style hill (put back afterwards; never saved, so a restart brings yours back)
 
 # ---------- window: small, transparent, always on top ----------
 $W = 480; $H = 380; $FX = 240; $FY = 300          # window size and where the feet sit inside it (roomy, so long flames and lasers' glow don't get cut off)
@@ -589,6 +668,10 @@ $S = @{
     # lasers and the sliced window
     lzE = $null; lzOn = $false; lzPow = 0.0; aimX = 0.0; aimY = 0.0; burnT = 0.0; lzFreeT = 0.0; lzHx = 0.0; lzHy = 0.0; lzErr = $false
     hz = ''; hzt = 0.0; doSlice = $false; sl = $null; bp = (Pt 0 0)
+    # the 2001 zap: state = off / in / out / on / rin / rout (a flash, the switch, the old look, the flash back, the switch back)
+    rtOk = ($retroOk -and $RetroMode); doRetro = $false
+    rt = @{ state = 'off'; t0 = 0.0; end = 0.0; flash = $null; tbi = $null; sm = $null; smUntil = 0.0; topT = 0.0; clkT = 0.0; btnT = 0.0
+            tbTop = 0.0; clk = $null; btns = (New-Object System.Collections.ArrayList); orig = ''; file = ''; hasWall = $false; saved = $false }
 }
 
 function CursorDip {
@@ -1207,13 +1290,14 @@ function LaserUpdate($t, $dt) {
     if ($hitAny) { $S.burnT += $dt } else { $S.burnT = [Math]::Max(0.0, $S.burnT - $dt * 2) }
     if ($S.burnT -gt 0.7) { $S.burnT = 0.0; BurnAt $S.lzHx $S.lzHy }          # the beam has been on a line long enough: it burns through
 }
-# angry flight arrives: he hovers in front of you and fires, then (maybe) slices your window
+# angry flight arrives: he hovers in front of you and fires, then (maybe) zaps your desktop back to 2001, or slices your window
 function StartHover($t) {
     $S.phase = 'hover'; $S.hz = 'lock'; $S.hzt = $t
     $S.aimX = $S.x; $S.aimY = $S.y - 80                    # (the beams swing round to your pointer)
     $S.lzOn = $true
-    $S.doSlice = $false
-    if ($WindowBreak -and $S.xOk -and ($rng.NextDouble() -lt $BreakChance)) { $S.doSlice = $true }
+    $S.doSlice = $false; $S.doRetro = $false
+    if ($S.rtOk -and $S.rt.state -eq 'off' -and ($rng.NextDouble() -lt $RetroChance)) { $S.doRetro = $true }
+    elseif ($WindowBreak -and $S.xOk -and ($rng.NextDouble() -lt $BreakChance)) { $S.doSlice = $true }
     EnsureLaser
 }
 function EndHover($t, $cur) {
@@ -1358,6 +1442,358 @@ function SliceUpdate($t, $dt) {
     $glow = 0.0; if ($tau -lt 0.6) { $glow = 1.0 - $tau / 0.6 }
     foreach ($cl2 in $sl.cuts) { $cl2.Opacity = $glow }
     if ($tau -gt 2.8) { SliceEnd }
+}
+
+# ---------- the 2001 zap: your desktop turns into a Windows XP look-alike for a while, then he changes it back ----------
+# What really happens: (1) a gentle white flash, (2) your wallpaper is swapped for a Bliss-style hill (this session only,
+# never saved), (3) a blue taskbar with a green Start button is drawn over your real taskbar (click-through: your real one
+# keeps working underneath) and a Start menu pops open for a few seconds, (4) after $RetroSeconds another flash and it all goes back.
+# Your windows themselves are never touched.
+
+# small builders: a rectangle and a piece of text on a canvas
+function RtBox($parent, $x, $y, $bw, $bh, $fill, $rad) {
+    $e = New-Object Windows.Shapes.Rectangle
+    $e.Width = $bw; $e.Height = $bh; $e.Fill = $fill; $e.IsHitTestVisible = $false
+    if ($rad -gt 0) { $e.RadiusX = $rad; $e.RadiusY = $rad }
+    [Windows.Controls.Canvas]::SetLeft($e, $x); [Windows.Controls.Canvas]::SetTop($e, $y)
+    [void]$parent.Children.Add($e)
+}
+function RtText($parent, $txt, $x, $y, $size, $brush, $bold, $family) {
+    $e = New-Object Windows.Controls.TextBlock
+    $e.Text = $txt; $e.FontSize = $size; $e.Foreground = $brush; $e.IsHitTestVisible = $false
+    $e.FontFamily = [Windows.Media.FontFamily]::new($family)
+    if ($bold) { $e.FontWeight = 'Bold' }
+    [Windows.Controls.Canvas]::SetLeft($e, $x); [Windows.Controls.Canvas]::SetTop($e, $y)
+    [void]$parent.Children.Add($e)
+}
+
+# a hill-and-sky picture in the style of the old default wallpaper, drawn with shapes (so there is no image to ship)
+function MakeBliss($pw, $ph) {
+    $cv = New-Object Windows.Controls.Canvas
+    $cv.Width = $pw; $cv.Height = $ph
+    $sky = New-Object Windows.Media.LinearGradientBrush
+    $sky.StartPoint = [Windows.Point]::new(0, 0); $sky.EndPoint = [Windows.Point]::new(0, 1)
+    foreach ($gs in @( @(0.0, 255, 22, 84, 200), @(0.4, 255, 52, 130, 226), @(0.7, 255, 118, 183, 244), @(1.0, 255, 186, 222, 248) )) {
+        [void]$sky.GradientStops.Add([Windows.Media.GradientStop]::new([Windows.Media.Color]::FromArgb($gs[1], $gs[2], $gs[3], $gs[4]), $gs[0]))
+    }
+    $cv.Background = $sky
+    # soft white clouds: x, y, width, height (as fractions of the picture) and how solid
+    foreach ($cd in @( @(0.02, 0.04, 0.36, 0.20, 0.95), @(0.18, 0.10, 0.28, 0.14, 0.85), @(0.55, 0.02, 0.45, 0.24, 0.90), @(0.70, 0.12, 0.30, 0.14, 0.80),
+                       @(0.32, 0.24, 0.26, 0.10, 0.70), @(0.62, 0.30, 0.28, 0.10, 0.75), @(0.00, 0.28, 0.20, 0.08, 0.60), @(0.80, 0.26, 0.20, 0.08, 0.70), @(0.44, 0.05, 0.18, 0.08, 0.70) )) {
+        $e = New-Object Windows.Shapes.Ellipse
+        $e.Width = $cd[2] * $pw; $e.Height = $cd[3] * $ph
+        $rb = New-Object Windows.Media.RadialGradientBrush
+        [void]$rb.GradientStops.Add([Windows.Media.GradientStop]::new([Windows.Media.Color]::FromArgb([int](255 * $cd[4]), 255, 255, 255), 0.0))
+        [void]$rb.GradientStops.Add([Windows.Media.GradientStop]::new([Windows.Media.Color]::FromArgb([int](150 * $cd[4]), 255, 255, 255), 0.5))
+        [void]$rb.GradientStops.Add([Windows.Media.GradientStop]::new([Windows.Media.Color]::FromArgb(0, 255, 255, 255), 1.0))
+        $e.Fill = $rb
+        [Windows.Controls.Canvas]::SetLeft($e, $cd[0] * $pw); [Windows.Controls.Canvas]::SetTop($e, $cd[1] * $ph)
+        [void]$cv.Children.Add($e)
+    }
+    # the green hill
+    $hg = New-Object Windows.Media.StreamGeometry
+    $gc = $hg.Open()
+    $gc.BeginFigure([Windows.Point]::new(0, 0.60 * $ph), $true, $true)
+    $gc.BezierTo([Windows.Point]::new(0.30 * $pw, 0.40 * $ph), [Windows.Point]::new(0.62 * $pw, 0.47 * $ph), [Windows.Point]::new($pw, 0.64 * $ph), $true, $true)
+    $gc.LineTo([Windows.Point]::new($pw, $ph), $true, $true)
+    $gc.LineTo([Windows.Point]::new(0, $ph), $true, $true)
+    $gc.Close()
+    $hp = New-Object Windows.Shapes.Path
+    $hp.Data = $hg
+    $hp.Fill = (New-Grad @( @(0.0, 255, 158, 210, 62), @(0.18, 255, 112, 178, 40), @(0.55, 255, 62, 140, 28), @(1.0, 255, 36, 100, 20) ))
+    [void]$cv.Children.Add($hp)
+    # a sunny patch on the hill
+    $sun = New-Object Windows.Shapes.Ellipse
+    $sun.Width = 0.7 * $pw; $sun.Height = 0.25 * $ph
+    $sb = New-Object Windows.Media.RadialGradientBrush
+    [void]$sb.GradientStops.Add([Windows.Media.GradientStop]::new([Windows.Media.Color]::FromArgb(120, 214, 240, 110), 0.0))
+    [void]$sb.GradientStops.Add([Windows.Media.GradientStop]::new([Windows.Media.Color]::FromArgb(0, 214, 240, 110), 1.0))
+    $sun.Fill = $sb
+    [Windows.Controls.Canvas]::SetLeft($sun, 0.12 * $pw); [Windows.Controls.Canvas]::SetTop($sun, 0.46 * $ph)
+    [void]$cv.Children.Add($sun)
+    $cv.Measure([Windows.Size]::new($pw, $ph))
+    $cv.Arrange([Windows.Rect]::new(0, 0, $pw, $ph))
+    $cv.UpdateLayout()
+    $rtb = [Windows.Media.Imaging.RenderTargetBitmap]::new($pw, $ph, 96, 96, [Windows.Media.PixelFormats]::Pbgra32)
+    $rtb.Render($cv)
+    return $rtb
+}
+function SaveWallpaper($pw, $ph) {
+    $bmp = MakeBliss $pw $ph
+    $path = Join-Path ([IO.Path]::GetTempPath()) 'stickbuddy_xp_wallpaper.png'
+    $enc = New-Object Windows.Media.Imaging.PngBitmapEncoder
+    $enc.Frames.Add([Windows.Media.Imaging.BitmapFrame]::Create($bmp))
+    $fs = [IO.File]::Create($path)
+    try { $enc.Save($fs) } finally { $fs.Dispose() }
+    return $path
+}
+# swaps your wallpaper for the hill ($true) or puts yours back ($false). Never written to your settings.
+function RetroWall($on) {
+    if (-not $RetroWallpaper) { return }
+    $r = $S.rt
+    if ($on) {
+        if (-not $r.saved) {
+            $orig = $null
+            try { $orig = (Get-ItemProperty -Path 'HKCU:\Control Panel\Desktop' -Name WallPaper -ErrorAction Stop).WallPaper } catch { }
+            if ([string]::IsNullOrEmpty($orig) -or -not (Test-Path -LiteralPath $orig)) { $orig = [RetroBits]::GetWallpaper() }
+            if ($null -eq $orig) { return }                    # can't tell what your wallpaper is, so it is left alone
+            $r.orig = $orig; $r.saved = $true
+        }
+        $scr = [Windows.Forms.Screen]::PrimaryScreen.Bounds
+        $r.file = SaveWallpaper $scr.Width $scr.Height
+        if ([RetroBits]::SetWallpaper($r.file)) { $r.hasWall = $true }
+    } elseif ($r.hasWall) {
+        [void][RetroBits]::SetWallpaper($r.orig)
+        $r.hasWall = $false; $r.saved = $false
+        try { if (Test-Path -LiteralPath $r.file) { Remove-Item -LiteralPath $r.file -Force } } catch { }
+    }
+}
+
+# the blue taskbar with the green Start button and the clock; null if your real taskbar is not along the bottom of the main screen
+function RetroMakeTaskbar {
+    $w2 = [Windows.SystemParameters]::WorkArea
+    $pw = [Windows.SystemParameters]::PrimaryScreenWidth; $ph = [Windows.SystemParameters]::PrimaryScreenHeight
+    $th = $ph - $w2.Bottom
+    if ($th -lt 24 -or $w2.Left -ne 0 -or $w2.Top -ne 0 -or [Math]::Abs($w2.Width - $pw) -gt 1) { return $null }
+    $sc = Clamp ($th / 30.0) 1.0 1.8
+    $cv = New-Object Windows.Controls.Canvas
+    $cv.Width = $pw; $cv.Height = $th; $cv.IsHitTestVisible = $false
+    [Windows.Controls.Canvas]::SetLeft($cv, 0 - $vl); [Windows.Controls.Canvas]::SetTop($cv, $w2.Bottom - $vt)
+    [Windows.Controls.Panel]::SetZIndex($cv, 2)
+    RtBox $cv 0 0 $pw $th (New-Grad @( @(0.0, 255, 66, 128, 236), @(0.08, 255, 41, 100, 221), @(0.5, 255, 36, 94, 220), @(0.9, 255, 28, 78, 186), @(1.0, 255, 22, 64, 154) )) 0
+    # the tray (right) with the clock
+    $trayW = 100 * $sc
+    RtBox $cv ($pw - $trayW) 0 $trayW $th (New-Grad @( @(0.0, 255, 24, 150, 236), @(0.1, 255, 15, 138, 229), @(0.9, 255, 11, 112, 204), @(1.0, 255, 9, 96, 184) )) 0
+    RtBox $cv ($pw - $trayW) 0 1 $th (Brush 16 66 178) 0
+    $dots = @( (Brush 200 200 210), (Brush 90 200 90), (Brush 230 80 70) )
+    for ($i = 0; $i -lt 3; $i++) { RtBox $cv ($pw - $trayW + 8 * $sc + $i * 12 * $sc) (($th - 9 * $sc) / 2) (9 * $sc) (9 * $sc) $dots[$i] (4 * $sc) }
+    $clk = New-Object Windows.Controls.TextBlock
+    $clk.Text = (Get-Date).ToString('h:mm tt'); $clk.FontSize = 12 * $sc; $clk.Foreground = $white; $clk.IsHitTestVisible = $false
+    $clk.FontFamily = [Windows.Media.FontFamily]::new('Tahoma')
+    [Windows.Controls.Canvas]::SetLeft($clk, $pw - $trayW + 46 * $sc); [Windows.Controls.Canvas]::SetTop($clk, ($th - 16 * $sc) / 2)
+    [void]$cv.Children.Add($clk)
+    # the green Start button
+    $bw = 118 * $sc
+    $sb = New-Object Windows.Controls.Border
+    $sb.Width = $bw; $sb.Height = $th; $sb.IsHitTestVisible = $false
+    $sb.CornerRadius = [Windows.CornerRadius]::new(0, 10 * $sc, 10 * $sc, 0)
+    $sb.Background = (New-Grad @( @(0.0, 255, 118, 200, 98), @(0.12, 255, 70, 170, 62), @(0.5, 255, 56, 150, 50), @(0.85, 255, 40, 122, 36), @(1.0, 255, 34, 104, 30) ))
+    [void]$cv.Children.Add($sb)
+    $lx = 14 * $sc; $ly = ($th - 18 * $sc) / 2
+    RtBox $cv $lx $ly (8 * $sc) (8 * $sc) (Brush 242 84 44) (1 * $sc)
+    RtBox $cv ($lx + 10 * $sc) $ly (8 * $sc) (8 * $sc) (Brush 120 196 48) (1 * $sc)
+    RtBox $cv $lx ($ly + 10 * $sc) (8 * $sc) (8 * $sc) (Brush 52 136 236) (1 * $sc)
+    RtBox $cv ($lx + 10 * $sc) ($ly + 10 * $sc) (8 * $sc) (8 * $sc) (Brush 250 202 44) (1 * $sc)
+    $st = New-Object Windows.Controls.TextBlock
+    $st.Text = 'start'; $st.FontSize = 20 * $sc; $st.Foreground = $white; $st.IsHitTestVisible = $false
+    $st.FontFamily = [Windows.Media.FontFamily]::new('Trebuchet MS'); $st.FontStyle = 'Italic'; $st.FontWeight = 'Bold'
+    [Windows.Controls.Canvas]::SetLeft($st, 40 * $sc); [Windows.Controls.Canvas]::SetTop($st, ($th - 26 * $sc) / 2)
+    [void]$cv.Children.Add($st)
+    return @{ cv = $cv; clk = $clk; w = $pw; h = $th; s = $sc; bw = $bw; trayW = $trayW; top = $w2.Bottom }
+}
+# one taskbar button per open window (refreshed every few seconds)
+function RetroButtons {
+    $r = $S.rt; $ti = $r.tbi
+    if ($null -eq $ti) { return }
+    foreach ($b0 in $r.btns) { $ti.cv.Children.Remove($b0) }
+    $r.btns.Clear()
+    $titles = [RetroBits]::Titles(8)
+    $fore = [RetroBits]::ForeTitle()
+    $n = $titles.Count
+    if ($n -eq 0) { return }
+    $x0 = $ti.bw + 10 * $ti.s
+    $avail = $ti.w - $x0 - $ti.trayW - 10
+    $bw2 = [Math]::Min(170 * $ti.s, $avail / $n - 4)
+    if ($bw2 -lt 40) { return }
+    for ($i = 0; $i -lt $n; $i++) {
+        $act = ($titles[$i] -eq $fore)
+        $bd = New-Object Windows.Controls.Border
+        $bd.Width = $bw2; $bd.Height = $ti.h - 6 * $ti.s; $bd.IsHitTestVisible = $false
+        $bd.CornerRadius = [Windows.CornerRadius]::new(3 * $ti.s)
+        $bd.BorderThickness = [Windows.Thickness]::new(1)
+        if ($act) {
+            $bd.Background = (New-Grad @( @(0.0, 255, 30, 82, 183), @(1.0, 255, 40, 100, 212) )); $bd.BorderBrush = (Brush 14 40 124)
+        } else {
+            $bd.Background = (New-Grad @( @(0.0, 255, 92, 150, 246), @(0.5, 255, 60, 124, 238), @(1.0, 255, 44, 104, 224) )); $bd.BorderBrush = (Brush 18 62 170)
+        }
+        $tx = New-Object Windows.Controls.TextBlock
+        $tx.Text = $titles[$i]; $tx.Foreground = $white; $tx.FontFamily = [Windows.Media.FontFamily]::new('Tahoma'); $tx.FontSize = 11 * $ti.s
+        $tx.TextTrimming = 'CharacterEllipsis'; $tx.Margin = [Windows.Thickness]::new(8 * $ti.s, 0, 4, 0); $tx.VerticalAlignment = 'Center'
+        $bd.Child = $tx
+        [Windows.Controls.Canvas]::SetLeft($bd, $x0 + $i * ($bw2 + 4)); [Windows.Controls.Canvas]::SetTop($bd, 3 * $ti.s)
+        [void]$ti.cv.Children.Add($bd)
+        [void]$r.btns.Add($bd)
+    }
+}
+# the open Start menu (the look from the screenshots), 380 x 470
+function RetroMakeMenu {
+    $m = New-Object Windows.Controls.Canvas
+    $m.Width = 380; $m.Height = 470; $m.IsHitTestVisible = $false
+    $body = New-Object Windows.Shapes.Rectangle
+    $body.Width = 380; $body.Height = 470; $body.Fill = (Brush 255 255 255); $body.Stroke = (Brush 22 72 196); $body.StrokeThickness = 2; $body.IsHitTestVisible = $false
+    [void]$m.Children.Add($body)
+    $uname = $env:USERNAME
+    if ([string]::IsNullOrEmpty($uname)) { $uname = 'user' }
+    RtBox $m 1 1 378 58 (New-Grad @( @(0.0, 255, 31, 86, 214), @(0.5, 255, 56, 120, 235), @(1.0, 255, 36, 92, 218) )) 0
+    RtBox $m 10 6 46 46 (New-Grad @( @(0.0, 255, 235, 150, 60), @(1.0, 255, 190, 80, 30) )) 5
+    RtBox $m 24 12 18 18 (Brush 255 240 220) 9
+    RtBox $m 17 32 32 18 (Brush 255 240 220) 9
+    RtText $m $uname 66 16 20 $white $true 'Trebuchet MS'
+    RtBox $m 1 59 189 366 (Brush 255 255 255) 0
+    RtBox $m 190 59 189 366 (Brush 211 229 250) 0
+    RtBox $m 190 59 1 366 (Brush 153 186 229) 0
+    RtBox $m 1 425 378 44 (New-Grad @( @(0.0, 255, 36, 92, 218), @(1.0, 255, 31, 80, 200) )) 0
+    $ic = @( (Brush 60 130 230), (Brush 240 150 40), (Brush 80 180 90), (Brush 150 90 200), (Brush 230 190 50), (Brush 200 70 70) )
+    # left column: the two big pinned programs, then the others
+    RtBox $m 10 66 32 32 $ic[0] 5
+    RtText $m 'Internet' 50 67 13 (Brush 0 0 0) $true 'Tahoma'
+    RtText $m 'Internet' 50 84 11 (Brush 120 120 120) $false 'Tahoma'
+    RtBox $m 10 108 32 32 $ic[1] 5
+    RtText $m 'E-mail' 50 109 13 (Brush 0 0 0) $true 'Tahoma'
+    RtText $m 'E-mail' 50 126 11 (Brush 120 120 120) $false 'Tahoma'
+    RtBox $m 10 148 170 1 (Brush 210 210 210) 0
+    $small = @('Notepad', 'Calculator', 'Paint', 'Command Prompt', 'Music Player', 'Photo Viewer')
+    $yy = 158; $k = 0
+    foreach ($nm in $small) {
+        $ci = $ic[$k % 6]
+        RtBox $m 12 $yy 24 24 $ci 4
+        RtText $m $nm 46 ($yy + 4) 12 (Brush 0 0 0) $false 'Tahoma'
+        $yy += 36; $k++
+    }
+    RtBox $m 10 392 170 1 (Brush 210 210 210) 0
+    RtText $m 'All Programs' 56 402 12 (Brush 0 0 0) $true 'Tahoma'
+    RtBox $m 150 398 24 24 (Brush 60 170 60) 12
+    # right column
+    $rn = @('My Documents', 'My Recent Documents', 'My Pictures', 'My Music', 'My Computer')
+    $yy = 68; $k = 0
+    foreach ($nm in $rn) {
+        $ci = $ic[($k + 2) % 6]
+        RtBox $m 198 $yy 26 26 $ci 4
+        RtText $m $nm 232 ($yy + 5) 12 (Brush 0 40 110) $true 'Tahoma'
+        $yy += 33; $k++
+    }
+    RtBox $m 198 236 170 1 (Brush 160 190 230) 0
+    $rn2 = @('Control Panel', 'Printers and Faxes', 'Help and Support', 'Search', 'Run...')
+    $yy = 246; $k = 0
+    foreach ($nm in $rn2) {
+        $ci = $ic[($k + 4) % 6]
+        RtBox $m 198 $yy 22 22 $ci 4
+        RtText $m $nm 232 ($yy + 4) 12 (Brush 0 40 110) $false 'Tahoma'
+        $yy += 32; $k++
+    }
+    # the bottom bar
+    RtBox $m 118 433 26 26 (Brush 240 170 40) 5
+    RtText $m 'Log Off' 150 438 12 $white $false 'Tahoma'
+    RtBox $m 222 433 26 26 (Brush 214 64 40) 5
+    RtText $m 'Turn Off Computer' 254 438 12 $white $false 'Tahoma'
+    return $m
+}
+# the flash that covers the change (one gentle fade in and out, never a strobe)
+function RetroEnsure {
+    EnsureFx
+    if ($null -ne $S.rt.flash) { return }
+    $fr = New-Object Windows.Shapes.Rectangle
+    $fr.Width = $vw; $fr.Height = $vh; $fr.Fill = (Brush 255 255 255); $fr.Opacity = 0.0; $fr.IsHitTestVisible = $false
+    [Windows.Controls.Panel]::SetZIndex($fr, 50)
+    [void]$S.lzc.Children.Add($fr)
+    $S.rt.flash = $fr
+}
+# keeps the old look above your real taskbar (and him above the old look)
+function RetroTop {
+    try { $S.fxw.Topmost = $false; $S.fxw.Topmost = $true; $win.Topmost = $false; $win.Topmost = $true } catch { }
+}
+function RetroBegin($t) {
+    if ($S.rt.state -ne 'off') { return }
+    RetroEnsure
+    $S.rt.state = 'in'; $S.rt.t0 = $t
+}
+# the flash is at its brightest: swap everything while nobody can see it
+function RetroApply($t) {
+    $r = $S.rt
+    $r.end = $t + $RetroSeconds
+    $r.topT = $t + 1.5; $r.clkT = $t + 1.0; $r.btnT = $t + 3.0
+    try { RetroWall $true } catch { Write-Host ('StickBuddy: could not swap the wallpaper: ' + $_.Exception.Message) -ForegroundColor Yellow }
+    $ti = RetroMakeTaskbar
+    $r.tbi = $ti
+    if ($null -ne $ti) {
+        [void]$S.lzc.Children.Add($ti.cv)
+        $r.tbTop = $ti.top
+        $r.clk = $ti.clk
+        RetroButtons
+    } else {
+        $r.clk = $null
+        $r.tbTop = [Windows.SystemParameters]::PrimaryScreenHeight
+    }
+    $mn = RetroMakeMenu
+    [Windows.Controls.Canvas]::SetLeft($mn, 0 - $vl); [Windows.Controls.Canvas]::SetTop($mn, $r.tbTop - 470 - $vt)
+    [Windows.Controls.Panel]::SetZIndex($mn, 3)
+    [void]$S.lzc.Children.Add($mn)
+    $r.sm = $mn; $r.smUntil = $t + 4.5
+    RetroTop
+    $S.msg = 'welcome to 2001!'; $S.msgT = $t + 2.6
+}
+# take the old look away and put your wallpaper back
+function RetroRevert {
+    $r = $S.rt
+    try { RetroWall $false } catch { }
+    if ($null -ne $r.tbi) { $S.lzc.Children.Remove($r.tbi.cv); $r.tbi = $null }
+    if ($null -ne $r.sm) { $S.lzc.Children.Remove($r.sm); $r.sm = $null }
+    $r.btns.Clear(); $r.clk = $null
+}
+# used when he leaves (ESC or closing the window) so your wallpaper is always put back
+function RetroRestoreNow {
+    if ($S.rt.state -eq 'off' -and -not $S.rt.hasWall) { return }
+    RetroRevert
+    try { if ($null -ne $S.rt.flash) { $S.rt.flash.Opacity = 0.0 } } catch { }
+    $S.rt.state = 'off'
+}
+function RetroFail($err) {
+    if ($S.rtOk) { Write-Host ('StickBuddy: the 2001 zap hit a problem and was turned off: ' + $err.Exception.Message + ' (script line ' + $err.InvocationInfo.ScriptLineNumber + ')') -ForegroundColor Yellow }
+    $S.rtOk = $false
+    try { RetroRevert } catch { }
+    try { if ($null -ne $S.rt.flash) { $S.rt.flash.Opacity = 0.0 } } catch { }
+    $S.rt.state = 'off'
+}
+function RetroTick($t, $dt) {
+    $r = $S.rt
+    switch ($r.state) {
+        'off' { }
+        'in' {                                             # flash up, swap at the peak
+            $k = Clamp01 (($t - $r.t0) / 0.3)
+            $r.flash.Opacity = 0.85 * $k
+            if ($k -ge 1) { RetroApply $t; $r.state = 'out'; $r.t0 = $t }
+        }
+        'out' {                                            # flash fades away: welcome to 2001
+            $k = Clamp01 (($t - $r.t0) / 0.8)
+            $r.flash.Opacity = 0.85 * (1 - $k)
+            if ($k -ge 1) { $r.flash.Opacity = 0.0; $r.state = 'on' }
+        }
+        'on' {                                             # the old look is on: keep it fresh until the time is up
+            if ($t -ge $r.end) {
+                $r.state = 'rin'; $r.t0 = $t
+                $S.msg = 'back to the future!'; $S.msgT = $t + 2.2
+            } else {
+                if ($null -ne $r.sm -and $t -gt $r.smUntil) {          # the Start menu closes by itself
+                    $fk = Clamp01 (($t - $r.smUntil) / 0.35)
+                    $r.sm.Opacity = 1 - $fk
+                    if ($fk -ge 1) { $S.lzc.Children.Remove($r.sm); $r.sm = $null }
+                }
+                if ($t -ge $r.topT) { $r.topT = $t + 1.5; RetroTop }
+                if ($t -ge $r.clkT) { $r.clkT = $t + 1.0; if ($null -ne $r.clk) { $r.clk.Text = (Get-Date).ToString('h:mm tt') } }
+                if ($t -ge $r.btnT) { $r.btnT = $t + 3.0; RetroButtons }
+            }
+        }
+        'rin' {                                            # flash up again, switch back at the peak
+            $k = Clamp01 (($t - $r.t0) / 0.3)
+            $r.flash.Opacity = 0.85 * $k
+            if ($k -ge 1) { RetroRevert; $r.state = 'rout'; $r.t0 = $t }
+        }
+        'rout' {
+            $k = Clamp01 (($t - $r.t0) / 0.8)
+            $r.flash.Opacity = 0.85 * (1 - $k)
+            if ($k -ge 1) { $r.flash.Opacity = 0.0; $r.state = 'off' }
+        }
+    }
 }
 
 # ---------- smooth poses (so he eases from one pose into the next instead of snapping) ----------
@@ -1682,7 +2118,9 @@ $timer.Add_Tick({
         'hover' {                                          # eye-laser pose: hovering on his jets, beams on your pointer (and maybe a window)
             $S.ang += ($S.to - $S.ang) * [Math]::Min(1.0, $dt * 12)
             $k1 = [Math]::Min(1.0, $dt * 12)
-            $S.aimX += ($tx - $S.aimX) * $k1; $S.aimY += ($ty - $S.aimY) * $k1
+            $ax2 = $tx; $ay2 = $ty
+            if ($S.hz -eq 'retro') { $ax2 = 60.0; $ay2 = [Windows.SystemParameters]::PrimaryScreenHeight - 20 }      # the beams swing down to the Start button
+            $S.aimX += ($ax2 - $S.aimX) * $k1; $S.aimY += ($ay2 - $S.aimY) * $k1
             $fxd = $S.aimX - $S.x; if ([Math]::Abs($fxd) -gt 25) { $S.face = [Math]::Sign($fxd) }
             $gx = [Math]::Max($S.cl, [Math]::Min($S.cr, $tx - $S.face * 150))
             $gy = [Math]::Max($S.cc + 20, [Math]::Min($S.cf - 40, $ty - 10))
@@ -1692,8 +2130,12 @@ $timer.Add_Tick({
             if ($S.hz -eq 'lock') {
                 $say = 'pew pew!'
                 if ($el -gt 1.25) {
-                    if ($S.doSlice -and (SliceStart $t)) { $S.hz = 'sweep'; $S.hzt = $t } else { EndHover $t $cur }
+                    if ($S.doRetro) { $S.hz = 'retro'; $S.hzt = $t; RetroBegin $t }
+                    elseif ($S.doSlice -and (SliceStart $t)) { $S.hz = 'sweep'; $S.hzt = $t } else { EndHover $t $cur }
                 }
+            } elseif ($S.hz -eq 'retro') {
+                $say = 'back to 2001!'
+                if ($el -gt 1.9) { EndHover $t $cur }
             } elseif ($S.hz -eq 'sweep') {
                 $say = 'snip!'
                 $prog = Clamp01 ($el / 0.8)
@@ -1800,6 +2242,8 @@ $timer.Add_Tick({
         if (-not $S.lzErr) { $S.lzErr = $true; Write-Host ('StickBuddy: an effect failed: ' + $_.Exception.Message + ' (script line ' + $_.InvocationInfo.ScriptLineNumber + ')') -ForegroundColor Yellow }
         try { SliceEnd } catch { }
     }
+    # the 2001 zap (kept apart on purpose: if it fails, only it is switched off, and your wallpaper is put back)
+    if ($S.rtOk) { try { RetroTick $t $dt } catch { RetroFail $_ } }
     $S.pc = $cur
   } catch {
     if (-not $S.errShown) {
@@ -1817,7 +2261,11 @@ $win.Add_SourceInitialized({
     $S.src = [Windows.PresentationSource]::FromVisual($win)
 })
 $win.Add_Loaded({ $S.last = [DateTime]::UtcNow; $timer.Start() })
-$win.Add_Closed({ $timer.Stop(); try { if ($null -ne $S.fxw) { $S.fxw.Close() } } catch { } })
+$win.Add_Closed({
+    $timer.Stop()
+    try { RetroRestoreNow } catch { }                      # (always puts your own wallpaper back)
+    try { if ($null -ne $S.fxw) { $S.fxw.Close() } } catch { }
+})
 
-Write-Host "StickBuddy is running. Leave him alone and he wanders; grab or throw him and he flies to your pointer, zaps you with lasers and slices your window. Open Paint for more. ESC (or close this window) makes him leave."
+Write-Host "StickBuddy is running. Leave him alone and he wanders; grab or throw him and he flies to your pointer, zaps you with lasers and slices your window - or zaps your desktop back to 2001 for 2 minutes. Open Paint for more. ESC (or close this window) makes him leave."
 [void]$win.ShowDialog()
